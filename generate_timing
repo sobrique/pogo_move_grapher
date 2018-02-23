@@ -1,0 +1,200 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use JSON;
+use Data::Dumper;
+
+my $time_limit = 100 * 1000;
+
+my $stab_mult = 1.2;
+
+my $debug = 1;
+
+my @pokemon_list;
+my %moves;
+
+open my $game_master, '<', 'GM.DAT' or die $!;
+
+local $/ = "item_templates";
+while (<$game_master>) {
+    if (m/pokemon_settings/) {
+
+        #it's a pokemon, extract name, type, moves.
+        my %pokemon      = /(\w+): (\S+)/g;
+        my @quick_moves  = m/quick_moves: (\w+)/g;
+        my @charge_moves = m/cinematic_moves: (\w+)/g;
+        $pokemon{'quick_moves'}  = [m/quick_moves: (\w+)/g];
+        $pokemon{'charge_moves'} = [m/cinematic_moves: (\w+)/g];
+        $pokemon{'types'}        = [m/\btype\w*: POKEMON_TYPE_(\w+)/g];
+        $pokemon{"is"}{$_} = 1 for @{ $pokemon{'types'} };
+
+        push @pokemon_list, \%pokemon;
+    }
+
+    if (m/move_settings/) {
+        my %move = /(\w+): (\S+)/g;
+        ( $move{'type'} ) = m/pokemon_type: POKEMON_TYPE_(\w+)/;
+        $move{'name'} = $move{'vfx_name'};
+        $move{'name'} =~ s/\"//g;
+        $move{'name'} =~ s/_fast$//g;
+        $move{'name'} =~ s/_/ /g;
+        $move{'name'} =~ s/\b(\w)(\w+)/\U$1\L$2/g;
+        $moves{ $move{'movement_id'} } = \%move;
+    }
+
+}
+
+close ( $game_master );
+
+print Dumper \@pokemon_list;
+print Dumper \%moves;
+
+
+open ( my $move_dodge_timing, '>', 'output/move_dodge_timing.csv' ) or die $!;
+print {$move_dodge_timing} "Move Name,Move ID,Damage Type,Move Power,Energy delta, Quick/Charge,duration,damage window start,damage window end,damage window size\n";
+foreach my $move_name ( sort keys %moves ) { 
+   print {$move_dodge_timing} join ",", $moves{$move_name}{'name'}, 
+                                        $move_name,
+                                        $moves{$move_name}{'type'}, 
+                                        $moves{$move_name}{'power'},
+                                        $moves{$move_name}{'energy_delta'},
+                                        $moves{$move_name}{'movement_id'} =~ /_FAST$/ ? "Quick" : "Charge", 
+                                        $moves{$move_name}{'duration_ms'},
+                                        $moves{$move_name}{'damage_window_start_ms'},
+                                        $moves{$move_name}{'damage_window_end_ms'},
+                                        $moves{$move_name}{'damage_window_end_ms'} - $moves{$move_name}{'damage_window_start_ms'},
+                                        "\n";
+}
+close ( $move_dodge_timing );
+
+open( my $summary, '>', "output/final_damage_sum.csv" ) or die $!;
+print {$summary}
+    "Pokemon,Quick Move,Charge Move,Time,Total Moveset Damage,Total Moveset DPS\n";
+
+foreach my $pokemon (@pokemon_list) {
+
+    my $name = $pokemon->{'pokemon_id'};
+    if ( $name =~ m/^\d+$/ ) { 
+      my $template = $pokemon -> {'template_id'};
+      ( $name ) = $template =~ m/V\d+_\w+_(.*)$/;
+      $name =~ s/\"$//;
+    }
+    $name =~ s/_/ /;
+    $name =~ s/\b(\w)(\w+)/\U$1\L$2/g;
+
+    print "plotting $name\n";
+
+    open( my $gnuplot, '|-', 'gnuplot' );
+
+    #   open ( my $gnuplot, '>', "gnuplot_$row{Pokemon}.cmd" ) or die $!;
+    print {$gnuplot} "set xlabel 'fight time (s)'\n";
+    print {$gnuplot} "set xrange [0:100]\n";
+    print {$gnuplot} "set yrange [0:2000]\n";
+    print {$gnuplot} "set ylabel 'damage dealt'\n";
+    print {$gnuplot} "set title \'$name\'\n";
+    print {$gnuplot} "set terminal pngcairo dashed size 1200,800\n";
+    print {$gnuplot} "set output \"output/$name.png\"\n";
+    print {$gnuplot}
+        "set style line 1 lc rgb '#0060ad' lt 1 lw 2 pi -1 ps 1.0\n";
+    print {$gnuplot}
+        "set style line 2 lc rgb '#dd181f' lt 9 lw 2 pi -1 ps 1.0\n";
+    print {$gnuplot}
+        "set style line 3 lc rgb '#1ce5ff' lt 6 lw 2 pi -1 ps 1.0\n";
+    print {$gnuplot}
+        "set style line 4 lc rgb '#63ffac' lt 7 lw 2 pi -1 ps 1.0\n";
+    print {$gnuplot}
+        "set style line 5 lc rgb '#b79762' lt 8 lw 2 pi -1 ps 1.0\n";
+    print {$gnuplot}
+        "set style line 6 lc rgb '#ff89c8' lt 4 lw 2 pi -1 ps 1.0\n";
+    print {$gnuplot}
+        "set style line 7 lc rgb '#99d443' lt 3 lw 2 pi -1 ps 1.0\n";
+    print {$gnuplot}
+        "set style line 8 lc rgb '#8FB0FF' lt 2 lw 2 pi -1 ps 1.0\n";
+    print {$gnuplot}
+        "set style line 9 lc rgb '#997D87' lt 5 lw 2 pi -1 ps 1.0\n";
+
+    #print {$gnuplot} "set multiplot\n";
+    print {$gnuplot} "set key left box\n";
+    print {$gnuplot} "plot ";
+
+    my $line_style = 2;
+
+    foreach my $quick_move ( @{ $pokemon->{'quick_moves'} } ) {
+        foreach my $charge_move ( @{ $pokemon->{'charge_moves'} } ) {
+
+            my $filename = join "_", $name, $quick_move, $charge_move,
+                "DOT.csv";
+            $filename =~ s/\s+/-/g;
+            open( my $output, '>', "results/$filename" ) or die $!;
+
+            print "$pokemon->{'pokemon_id'} $quick_move $charge_move\n";
+
+            #next unless defined $moves{$charge_move}{'energy_delta'};
+            #next unless defined $moves{$quick_move}{'energy_delta'};
+            #next unless $moves{$quick_move}{'duration_ms'};
+            print "$quick_move ", join " ", $moves{$quick_move}{'name'},
+                $moves{$quick_move}{'power'},
+                $moves{$quick_move}{'duration_ms'},
+                $moves{$quick_move}{'energy_delta'}, "\n";
+            print "$charge_move ", join " ", $moves{$charge_move}{'name'},
+                $moves{$charge_move}{'power'},
+                $moves{$charge_move}{'duration_ms'},
+                $moves{$charge_move}{'energy_delta'}, "\n";
+
+            my $quick_move_damage_mult  = 1;
+            my $charge_move_damage_mult = 1;
+
+            if ( $pokemon->{is}{ $moves{$quick_move}{'type'} } ) {
+                $quick_move_damage_mult = $stab_mult;
+                print "$quick_move is STAB\n";
+            }
+            if ( $pokemon->{is}{ $moves{$charge_move}{'type'} } ) {
+                $charge_move_damage_mult = $stab_mult;
+                print "$charge_move is STAB\n";
+            }
+
+            next unless defined $moves{$charge_move}{'energy_delta'};
+            next unless defined $moves{$charge_move}{'duration_ms'};
+            my $run_time       = 0;
+            my $current_energy = 0;
+            my $damage_dealt   = 0;
+            ##start simulation
+            while ( $run_time <= $time_limit ) {
+
+#check if we have enough energy to do it. -1 needed because it's a negative energy delta.
+                if ( $current_energy
+                    >= -1 * $moves{$charge_move}{'energy_delta'} )
+                {
+                    $current_energy += $moves{$charge_move}{'energy_delta'};
+                    $run_time       += $moves{$charge_move}{'duration_ms'};
+                    my $damage = $moves{$charge_move}{'power'};
+                    $damage_dealt += $damage * $charge_move_damage_mult;
+                }
+                else {
+                    ## use quick move
+                    $current_energy += $moves{$quick_move}{'energy_delta'};
+                    #removed to allow overcharge, to better model 'damage-energy'
+                    #$current_energy = 100 if $current_energy > 100;
+                    $run_time += $moves{$quick_move}{'duration_ms'};
+                    my $damage = $moves{$quick_move}{'power'};
+                    $damage_dealt += $damage * $quick_move_damage_mult;
+
+                }
+                print {$output} $run_time / 1000, " $damage_dealt\n";
+            }
+            print {$summary} join ",", $name, $moves{$quick_move}{'name'}, $moves{$charge_move}{'name'},
+                $run_time / 1000, $damage_dealt,
+                ( $damage_dealt / $run_time ) * 1000, "\n";
+            print {$gnuplot} "\'results/$filename\' using 1:2 title \'",
+                $moves{$quick_move}{'name'},  " + ",
+                $moves{$charge_move}{'name'}, "\' with lines ls ",
+                $line_style++, ", ";
+
+        }
+    }
+    print {$gnuplot} "\n";
+    close($gnuplot);
+
+}
+
