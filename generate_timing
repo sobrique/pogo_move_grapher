@@ -5,19 +5,28 @@ use warnings;
 use JSON;
 use Data::Dumper;
 
+
+#time limit of simulation in ms. 
+#because gym fights last 100s, but the GAME_MASTER works in ms
 my $time_limit = 100 * 1000;
 
+#same type attack bonus
 my $stab_mult = 1.2;
 
+#make more noise
 my $debug = 1;
 
 my @pokemon_list;
 my %moves;
 
-open my $game_master, '<', 'GM.DAT' or die $!;
+#extract this from your device - look elsewhere for how to accomplish this. 
+open my $game_master, '<', 'GAME_MASTER.DAT' or die $!;
 
+{
+#set record separator for parsing within this scope
 local $/ = "item_templates";
 while (<$game_master>) {
+#iterate record by record
     if (m/pokemon_settings/) {
 
         #it's a pokemon, extract name, type, moves.
@@ -44,51 +53,43 @@ while (<$game_master>) {
     }
 
 }
+}
 
 close ( $game_master );
 
-print Dumper \@pokemon_list;
-print Dumper \%moves;
+print Dumper \@pokemon_list if $debug;
+print Dumper \%moves if $debug;
 
-
-open ( my $move_dodge_timing, '>', 'output/move_dodge_timing.csv' ) or die $!;
-print {$move_dodge_timing} "Move Name,Move ID,Damage Type,Move Power,Energy delta, Quick/Charge,duration,damage window start,damage window end,damage window size\n";
-foreach my $move_name ( sort keys %moves ) { 
-   print {$move_dodge_timing} join ",", $moves{$move_name}{'name'}, 
-                                        $move_name,
-                                        $moves{$move_name}{'type'}, 
-                                        $moves{$move_name}{'power'},
-                                        $moves{$move_name}{'energy_delta'},
-                                        $moves{$move_name}{'movement_id'} =~ /_FAST$/ ? "Quick" : "Charge", 
-                                        $moves{$move_name}{'duration_ms'},
-                                        $moves{$move_name}{'damage_window_start_ms'},
-                                        $moves{$move_name}{'damage_window_end_ms'},
-                                        $moves{$move_name}{'damage_window_end_ms'} - $moves{$move_name}{'damage_window_start_ms'},
-                                        "\n";
-}
-close ( $move_dodge_timing );
-
+#summary file for output - calculates weave DPS average
 open( my $summary, '>', "output/final_damage_sum.csv" ) or die $!;
 print {$summary}
     "Pokemon,Quick Move,Charge Move,Time,Total Moveset Damage,Total Moveset DPS\n";
 
+#iterate each pokemon on the list
 foreach my $pokemon (@pokemon_list) {
 
+    #set name
     my $name = $pokemon->{'pokemon_id'};
+    #some have a number not a name. Inconsistency in the game-master.
     if ( $name =~ m/^\d+$/ ) { 
       my $template = $pokemon -> {'template_id'};
       ( $name ) = $template =~ m/V\d+_\w+_(.*)$/;
       $name =~ s/\"$//;
     }
+    #tidy up name formatting, so that it's uppercase first letter.
     $name =~ s/_/ /;
     $name =~ s/\b(\w)(\w+)/\U$1\L$2/g;
 
     print "plotting $name\n";
 
+
+    #you need gnuplot for this to work, for obvious reasons.
     open( my $gnuplot, '|-', 'gnuplot' );
 
     #   open ( my $gnuplot, '>', "gnuplot_$row{Pokemon}.cmd" ) or die $!;
     print {$gnuplot} "set xlabel 'fight time (s)'\n";
+
+    #set ranges - might want to set X to 60-100 and Y to 1500-2000 to get a good look at the 'end of fight' comparison
     print {$gnuplot} "set xrange [0:100]\n";
     print {$gnuplot} "set yrange [0:2000]\n";
     print {$gnuplot} "set ylabel 'damage dealt'\n";
@@ -120,6 +121,7 @@ foreach my $pokemon (@pokemon_list) {
 
     my $line_style = 2;
 
+    #iterate each quick/charge combo
     foreach my $quick_move ( @{ $pokemon->{'quick_moves'} } ) {
         foreach my $charge_move ( @{ $pokemon->{'charge_moves'} } ) {
 
@@ -145,6 +147,7 @@ foreach my $pokemon (@pokemon_list) {
             my $quick_move_damage_mult  = 1;
             my $charge_move_damage_mult = 1;
 
+            #increase damage if STAB
             if ( $pokemon->{is}{ $moves{$quick_move}{'type'} } ) {
                 $quick_move_damage_mult = $stab_mult;
                 print "$quick_move is STAB\n";
